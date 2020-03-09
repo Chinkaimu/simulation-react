@@ -1,11 +1,5 @@
 /**
- * 除了渲染，还需要有更新操作。我们需要考虑现在 DOM 需要渲染的结构以及当前渲染的 结构进行比较，根据差异决定是否更新。
- * 新增数据结构：currentRoot 存储当前 fiber 树
- * 主要变化点：
- *    * 创建要渲染的 fiber 树时，存在与上一个 Fiber 树的比较。
- *    * 提交 DOM 更新的时候不仅仅只照着 Fiber 的结构渲染，还要进行删除等操作
- *    * DOM 渲染完成后，将结果 Fiber 结构赋值给 currentRoot 保留下次使用
- * render ⟶ workLoop ⟶ performUnitOfWork ⟶ reconcileChildren ⟶ workLoop ⟶ commitRoot ⟶ commitWork ⟶ updateDom
+ * 实现 Hooks 使得函数组件有状态
  */
 function createElement(type, props, ...children) {
   return {
@@ -40,7 +34,6 @@ function createDom(fiber) {
   return dom;
 }
 
-// 6. [新增] 更新 DOM
 const isEvent = key => key.startsWith('on')
 const isProperty = key => (key !== 'children') && !isEvent(key)
 const isNew = (prev, next) => key => prev[key] !== next[key]
@@ -57,15 +50,6 @@ function updateDom (dom, prevProps, nextProps) {
     .forEach(name => {
       const eventType = name.toLowerCase().substring(2)
       dom.removeEventListener(eventType)
-    })
-
-    // TODO: 应该放在旧事件处理之后添加新事件处理函数
-    Object.keys(nextProps)
-    .filter(isEvent)
-    .filter(isNew(prevProps, nextProps))
-    .forEach(name => {
-      const eventType = name.toLowerCase.substring(2)
-      dom.addEventListener(eventType, nextProps[name])
     })
   
   // 移除非 children 的旧属性
@@ -91,13 +75,20 @@ function updateDom (dom, prevProps, nextProps) {
         dom[name] = nextProps[name]
       }
     })
+
+      
+    Object.keys(nextProps)
+    .filter(isEvent)
+    .filter(isNew(prevProps, nextProps))
+    .forEach(name => {
+      const eventType = name.toLowerCase.substring(2)
+      dom.addEventListener(eventType, nextProps[name])
+    })
 }
 
 let nextUnitOfWork = null
-// 1. [新增] 新增存储当前渲染结构
 let currentRoot = null
 let wipRoot = null
-// 2. [新增] 新增要删除列表
 let deletions = null
 
 function render (element, container) {
@@ -128,7 +119,6 @@ function workLoop(deadline) {
 }
 
 function commitRoot () {
-  // 5. [新增] 先删除需要删除的节点
   deletions.forEach(commitWork)
   commitWork(wipRoot.child)
   currentRoot = wipRoot
@@ -140,14 +130,19 @@ function commitWork (fiber) {
     return
   }
 
-  const domParent = fiber.parent.dom
+  let domParentFiber = fiber.parent.dom
+  while (!domParent.dom) {
+    domParentFiber = domParentFiber.parent
+  }
+
+  const domParent = domParentFiber.dom
   if (fiber.effectTag === "PLACEMENT" && fiber.dom != null) {
     domParent.appendChild(fiber.dom)
   } else if (fiber.effectTag === "UPDATE" && fiber.dom != null) {
     updateDom(fiber.dom, fiber.alternate.props, fiber.props)
   } else if (fiber.effectTag === "DELETION") {
-    // 此 if 语句在传入 deletions 时候执行
-    domParent.removeChild(fiber.dom)
+    // 2.1. [修改] 直接移除 DOM 替换成 commitDeletion 函数
+    commitDeletion(fiber, domParent)
   }
   commitWork(fiber.child)
   commitWork(fiber.sibling)
@@ -155,14 +150,23 @@ function commitWork (fiber) {
 
 requestIdleCallback(workLoop)
 
-function performUnitOfWork(fiber) {
-  if (!fiber.dom) {
-    fiber.dom = createDom(fiber)
+function commitDeletion(fiber, domParent) {
+  // 当 child 是自函数组件是不存在 DOM，需要遍历子节点找到真正的 DOM 再进行删除
+  if (fiber.dom) {
+    domParent.removeChild(fiber.dom)
+  } else {
+    commitDeletion(fiber.child, domParent)
   }
+}
 
-  const elements = fiber.props.children
-  // 3. [修改] 原本添加 fiber 的逻辑挪到 reconcileChildren 函数
-  reconcileChildren(fiber, elements)
+function performUnitOfWork(fiber) {
+  const isFunctionComponent = fiber.type instanceof Function
+
+  if (isFunctionComponent) {
+    updateFunctionComponent(fiber)
+  } else {
+    updateHostComponent(fiber)
+  }
 
   if (fiber.child) {
     return fiber.child
@@ -176,7 +180,72 @@ function performUnitOfWork(fiber) {
   }
 }
 
-// 4. [新增] 处理子节点，参数分别是 父节点，用于取第一个子节点，子节点可以再取后面的兄弟节点。
+// 1. [新增] 新增变量，存储渲染进行中的 fiber 节点
+let wipFiber = null
+// 2. [新增] 新增变量，当前 hook 的索引
+let hookIndex = null
+
+function updateFunctionComponent(fiber) {
+  // 更新进行中的 fiber 节点
+  wipFiber = fiber
+  // 重置 hook 索引
+  hookIndex = 0
+  // 新增 hooks 数组以支持同一个组件多次调用 useState
+  wipFiber.hooks = []
+  // 执行函数得到的结果就是 children
+  const children = [fiber.type(fiber.props)]
+  reconcileChildren(fiber, children)
+}
+
+// 3. [新增] 新增 hook 方法
+function useState(initial) {
+  // alternate 保存了上一次渲染的 fiber 节点
+  const oldHook =
+    wipFiber.alternate &&
+    wipFiber.alternate.hooks &&
+    wipFiber.alternate.hooks[hookIndex]
+
+  const hook = {
+    // 第一次渲染使用入参，第二次渲染复用前一次的状态
+    state: oldHook ? oldHook.state : initial,
+    // 保存每次 setState 入参的队列
+    queue: []
+  }
+
+  const actions = oldHook ? oldHook.queue : []
+  actions.forEach(action => {
+    // 根据调用 setState 顺序从前往后生成最新的 state
+    hook.state = action instanceof Function ? action(hook.state) : action
+  })
+
+  // setState 函数用于新增 state, 入参 action
+
+  const setState = action => {
+    hook.queue.push(action)
+    // 设置新的 wipRoot 和 nextUnitOfWork
+    // 浏览器空闲时即开始渲染
+    wipRoot = {
+      dom: currentRoot.dom,
+      props: currentRoot.props,
+      alternate: currentRoot
+    }
+    nextUnitOfWork = wipRoot
+    deletions = []
+  }
+
+  // 保存本次 hook
+  wipFiber.hooks.push(hook)
+  hookIndex++
+  return [hook.state, setState]
+}
+
+function updateHostComponent (fiber) {
+  if (!fiber.dom) {
+    fiber.dom = createDom(fiber)
+  }
+  reconcileChildren(fiber, fiber.props.children)
+}
+
 function reconcileChildren (wipFiber, elements) {
   let index = 0;
 

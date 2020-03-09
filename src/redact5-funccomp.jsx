@@ -1,11 +1,6 @@
 /**
- * 除了渲染，还需要有更新操作。我们需要考虑现在 DOM 需要渲染的结构以及当前渲染的 结构进行比较，根据差异决定是否更新。
- * 新增数据结构：currentRoot 存储当前 fiber 树
- * 主要变化点：
- *    * 创建要渲染的 fiber 树时，存在与上一个 Fiber 树的比较。
- *    * 提交 DOM 更新的时候不仅仅只照着 Fiber 的结构渲染，还要进行删除等操作
- *    * DOM 渲染完成后，将结果 Fiber 结构赋值给 currentRoot 保留下次使用
- * render ⟶ workLoop ⟶ performUnitOfWork ⟶ reconcileChildren ⟶ workLoop ⟶ commitRoot ⟶ commitWork ⟶ updateDom
+ * 在 React 中，我们不仅要渲染元素，我们还需要渲染组件
+ * * 函数组件的 fiber 节点没有对应 DOM
  */
 function createElement(type, props, ...children) {
   return {
@@ -40,7 +35,6 @@ function createDom(fiber) {
   return dom;
 }
 
-// 6. [新增] 更新 DOM
 const isEvent = key => key.startsWith('on')
 const isProperty = key => (key !== 'children') && !isEvent(key)
 const isNew = (prev, next) => key => prev[key] !== next[key]
@@ -57,15 +51,6 @@ function updateDom (dom, prevProps, nextProps) {
     .forEach(name => {
       const eventType = name.toLowerCase().substring(2)
       dom.removeEventListener(eventType)
-    })
-
-    // TODO: 应该放在旧事件处理之后添加新事件处理函数
-    Object.keys(nextProps)
-    .filter(isEvent)
-    .filter(isNew(prevProps, nextProps))
-    .forEach(name => {
-      const eventType = name.toLowerCase.substring(2)
-      dom.addEventListener(eventType, nextProps[name])
     })
   
   // 移除非 children 的旧属性
@@ -90,6 +75,15 @@ function updateDom (dom, prevProps, nextProps) {
       } else {
         dom[name] = nextProps[name]
       }
+    })
+
+      
+    Object.keys(nextProps)
+    .filter(isEvent)
+    .filter(isNew(prevProps, nextProps))
+    .forEach(name => {
+      const eventType = name.toLowerCase.substring(2)
+      dom.addEventListener(eventType, nextProps[name])
     })
 }
 
@@ -128,7 +122,6 @@ function workLoop(deadline) {
 }
 
 function commitRoot () {
-  // 5. [新增] 先删除需要删除的节点
   deletions.forEach(commitWork)
   commitWork(wipRoot.child)
   currentRoot = wipRoot
@@ -140,14 +133,20 @@ function commitWork (fiber) {
     return
   }
 
-  const domParent = fiber.parent.dom
+  // 1. [修改] 当 fiber 是函数组件节点时，不存在 DOM，需要向上寻找最近的有 DOM 的节点
+  let domParentFiber = fiber.parent.dom
+  while (!domParent.dom) {
+    domParentFiber = domParentFiber.parent
+  }
+
+  const domParent = domParentFiber.dom
   if (fiber.effectTag === "PLACEMENT" && fiber.dom != null) {
     domParent.appendChild(fiber.dom)
   } else if (fiber.effectTag === "UPDATE" && fiber.dom != null) {
     updateDom(fiber.dom, fiber.alternate.props, fiber.props)
   } else if (fiber.effectTag === "DELETION") {
-    // 此 if 语句在传入 deletions 时候执行
-    domParent.removeChild(fiber.dom)
+    // 2.1. [修改] 直接移除 DOM 替换成 commitDeletion 函数
+    commitDeletion(fiber, domParent)
   }
   commitWork(fiber.child)
   commitWork(fiber.sibling)
@@ -155,14 +154,26 @@ function commitWork (fiber) {
 
 requestIdleCallback(workLoop)
 
-function performUnitOfWork(fiber) {
-  if (!fiber.dom) {
-    fiber.dom = createDom(fiber)
+// 2.2. [新增] 移除 DOM 节点函数
+function commitDeletion(fiber, domParent) {
+  // 当 child 是自函数组件是不存在 DOM，需要遍历子节点找到真正的 DOM 再进行删除
+  if (fiber.dom) {
+    domParent.removeChild(fiber.dom)
+  } else {
+    commitDeletion(fiber.child, domParent)
   }
+}
 
-  const elements = fiber.props.children
-  // 3. [修改] 原本添加 fiber 的逻辑挪到 reconcileChildren 函数
-  reconcileChildren(fiber, elements)
+function performUnitOfWork(fiber) {
+  // 3. [新增] 判断是不是函数组件
+  const isFunctionComponent = fiber.type instanceof Function
+
+  // 4.0 [修改] 分别处理函数组件和元素
+  if (isFunctionComponent) {
+    updateFunctionComponent(fiber)
+  } else {
+    updateHostComponent(fiber)
+  }
 
   if (fiber.child) {
     return fiber.child
@@ -176,7 +187,21 @@ function performUnitOfWork(fiber) {
   }
 }
 
-// 4. [新增] 处理子节点，参数分别是 父节点，用于取第一个子节点，子节点可以再取后面的兄弟节点。
+// 4.1. [新增] 处理函数组件
+function updateFunctionComponent(fiber) {
+  // 执行函数得到的结果就是 children
+  const children = [fiber.type(fiber.props)]
+  reconcileChildren(fiber, children)
+}
+
+// 4.2. [新增] 处理原声标签组件
+function updateHostComponent (fiber) {
+  if (!fiber.dom) {
+    fiber.dom = createDom(fiber)
+  }
+  reconcileChildren(fiber, fiber.props.children)
+}
+
 function reconcileChildren (wipFiber, elements) {
   let index = 0;
 
