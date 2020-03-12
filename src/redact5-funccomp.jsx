@@ -1,5 +1,6 @@
 /**
  * 在 React 中，我们不仅要渲染元素，我们还需要渲染组件
+ * * 最主要差别： 节点是函数执行的结果
  * * 函数组件的 fiber 节点没有对应 DOM
  */
 function createElement(type, props, ...children) {

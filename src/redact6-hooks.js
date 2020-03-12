@@ -51,7 +51,7 @@ function updateDom (dom, prevProps, nextProps) {
       const eventType = name.toLowerCase().substring(2)
       dom.removeEventListener(eventType)
     })
-  
+
   // 移除非 children 的旧属性
   Object.keys(prevProps)
     .filter(isProperty)
@@ -76,7 +76,6 @@ function updateDom (dom, prevProps, nextProps) {
       }
     })
 
-      
     Object.keys(nextProps)
     .filter(isEvent)
     .filter(isNew(prevProps, nextProps))
@@ -219,7 +218,6 @@ function useState(initial) {
   })
 
   // setState 函数用于新增 state, 入参 action
-
   const setState = action => {
     hook.queue.push(action)
     // 设置新的 wipRoot 和 nextUnitOfWork
@@ -317,7 +315,8 @@ function reconcileChildren (wipFiber, elements) {
 
 const Redact = {
   createElement,
-  render
+  render,
+  useState
 }
 
 export default Redact;
